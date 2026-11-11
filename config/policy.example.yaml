@@ -1,0 +1,11 @@
+ros_domain_id: 91
+session_dir: /tmp/navigation-navigation
+odometry_topic: /odom
+safe_velocity_topic: /cmd_vel_safe
+max_vx_mps: 0.3
+max_wz_radps: 1.0
+velocity_timeout_seconds: 0.25
+backend_params: /opt/navigation/config/navigation.yaml
+launch_file: /opt/navigation/config/navigation.launch.py
+goal_timeout_seconds: 600
+require_motion_evidence: false
