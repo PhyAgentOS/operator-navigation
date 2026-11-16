@@ -1,0 +1,654 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,5 +1,5 @@
+ cmake_minimum_required(VERSION 3.5)
+-project(nav2_smac_planner)
++project(navigation_smac_planner)
+ 
+ set(CMAKE_BUILD_TYPE Release) #Debug, Release
+ 
+@@ -39,7 +39,7 @@
+   ${OMPL_INCLUDE_DIRS}
+ )
+ 
+-set(library_name nav2_smac_planner)
++set(library_name navigation_smac_planner)
+ 
+ set(dependencies
+   rclcpp
+@@ -81,73 +81,13 @@
+   ${dependencies}
+ )
+ 
+-# 2D plugin
+-add_library(${library_name}_2d SHARED
+-  src/smac_planner_2d.cpp
+-  src/a_star.cpp
+-  src/smoother.cpp
+-  src/collision_checker.cpp
+-  src/analytic_expansion.cpp
+-  src/node_hybrid.cpp
+-  src/node_lattice.cpp
+-  src/costmap_downsampler.cpp
+-  src/node_2d.cpp
+-  src/node_basic.cpp
+-)
+-
+-target_link_libraries(${library_name}_2d ${OMPL_LIBRARIES})
+-target_include_directories(${library_name}_2d PUBLIC ${Eigen3_INCLUDE_DIRS})
+-
+-ament_target_dependencies(${library_name}_2d
+-  ${dependencies}
+-)
+-
+-# Lattice plugin
+-add_library(${library_name}_lattice SHARED
+-  src/smac_planner_lattice.cpp
+-  src/a_star.cpp
+-  src/smoother.cpp
+-  src/collision_checker.cpp
+-  src/analytic_expansion.cpp
+-  src/node_hybrid.cpp
+-  src/node_lattice.cpp
+-  src/costmap_downsampler.cpp
+-  src/node_2d.cpp
+-  src/node_basic.cpp
+-)
+-
+-target_link_libraries(${library_name}_lattice ${OMPL_LIBRARIES})
+-target_include_directories(${library_name}_lattice PUBLIC ${Eigen3_INCLUDE_DIRS})
+-
+-ament_target_dependencies(${library_name}_lattice
+-  ${dependencies}
+-)
+-
+ pluginlib_export_plugin_description_file(nav2_core smac_plugin_hybrid.xml)
+-pluginlib_export_plugin_description_file(nav2_core smac_plugin_2d.xml)
+-pluginlib_export_plugin_description_file(nav2_core smac_plugin_lattice.xml)
+-
+-install(TARGETS ${library_name} ${library_name}_2d ${library_name}_lattice
+-  ARCHIVE DESTINATION lib
+-  LIBRARY DESTINATION lib
+-  RUNTIME DESTINATION lib/${PROJECT_NAME}
+-)
+-
++install(TARGETS ${library_name} LIBRARY DESTINATION lib)
+ install(DIRECTORY include/
+   DESTINATION include/
+ )
+ 
+-install(DIRECTORY lattice_primitives/sample_primitives DESTINATION share/${PROJECT_NAME})
+-
+-if(BUILD_TESTING)
+-  find_package(ament_lint_auto REQUIRED)
+-  set(AMENT_LINT_AUTO_FILE_EXCLUDE include/nav2_smac_planner/thirdparty/robin_hood.h)
+-  ament_lint_auto_find_test_dependencies()
+-  find_package(ament_cmake_gtest REQUIRED)
+-  add_subdirectory(test)
+-endif()
+-
+ ament_export_include_directories(include ${OMPL_INCLUDE_DIRS})
+-ament_export_libraries(${library_name} ${library_name}_2d ${library_name}_lattice)
++ament_export_libraries(${library_name})
+ ament_export_dependencies(${dependencies})
+ ament_package()
+--- a/include/nav2_smac_planner/analytic_expansion.hpp
++++ b/include/nav2_smac_planner/analytic_expansion.hpp
+@@ -49,13 +49,15 @@
+       Coordinates & proposed_coords_in)
+     : node(node_in),
+       initial_coords(initial_coords_in),
+-      proposed_coords(proposed_coords_in)
++      proposed_coords(proposed_coords_in),
++      cost(node_in->getCost())
+     {
+     }
+ 
+     NodePtr node;
+     Coordinates initial_coords;
+     Coordinates proposed_coords;
++    float cost;
+   };
+ 
+   typedef std::vector<AnalyticExpansionNode> AnalyticExpansionNodes;
+--- a/include/nav2_smac_planner/collision_checker.hpp
++++ b/include/nav2_smac_planner/collision_checker.hpp
+@@ -97,6 +97,9 @@
+    * @return the cost at the pose in costmap
+    */
+   float getCost();
++  bool isMotionValid(float x0, float y0, float bin0, float x1, float y1, float bin1,
++    bool traverse_unknown);
++
+ 
+   /**
+    * @brief Get the angles of the precomputed footprint orientations
+--- a/include/nav2_smac_planner/output_validation.hpp
++++ b/include/nav2_smac_planner/output_validation.hpp
+@@ -0,0 +1,81 @@
++// Copyright 2026 Navigation contributors. Licensed under Apache-2.0.
++#ifndef NAVIGATION_SMAC_OUTPUT_VALIDATION_HPP_
++#define NAVIGATION_SMAC_OUTPUT_VALIDATION_HPP_
++#include <algorithm>
++#include <cmath>
++#include <nav_msgs/msg/path.hpp>
++#include <nav2_costmap_2d/footprint_collision_checker.hpp>
++#include <tf2/utils.h>
++#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
++
++namespace nav2_smac_planner
++{
++// The caller holds the costmap lock and a single footprint snapshot. This checks
++// native rasterized contours, not an exact continuous 3-D swept volume.
++inline bool validOutputPose(
++  double x, double y, double yaw, nav2_costmap_2d::Costmap2D * map,
++  const nav2_costmap_2d::Footprint & footprint, bool radius, bool allow_unknown)
++{
++  if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(yaw)) {return false;}
++  unsigned int mx, my;
++  if (!map->worldToMap(x, y, mx, my)) {return false;}
++  auto cost = map->getCost(mx, my);
++  if (cost == nav2_costmap_2d::NO_INFORMATION) {
++    if (!allow_unknown) {return false;}
++  } else if (cost >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
++    return false;
++  }
++  if (radius) {return true;}
++  if (footprint.size() < 3) {return false;}
++  nav2_costmap_2d::Footprint oriented;
++  oriented.reserve(footprint.size());
++  const double c = std::cos(yaw), s = std::sin(yaw);
++  for (const auto & p : footprint) {
++    geometry_msgs::msg::Point q;
++    q.x = x + p.x * c - p.y * s;
++    q.y = y + p.x * s + p.y * c;
++    if (!std::isfinite(q.x) || !std::isfinite(q.y) ||
++      !map->worldToMap(q.x, q.y, mx, my)) {return false;}
++    oriented.push_back(q);
++  }
++  nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *> checker(map);
++  const double contour_cost = checker.footprintCost(oriented);
++  return contour_cost < nav2_costmap_2d::LETHAL_OBSTACLE ||
++         (allow_unknown && contour_cost == nav2_costmap_2d::NO_INFORMATION);
++}
++
++inline bool validOutputPath(
++  const nav_msgs::msg::Path & path, nav2_costmap_2d::Costmap2D * map,
++  const nav2_costmap_2d::Footprint & footprint, bool radius, bool allow_unknown)
++{
++  if (path.poses.empty()) {return false;}
++  double reach = 0.0;
++  for (const auto & p : footprint) {reach = std::max(reach, std::hypot(p.x, p.y));}
++  const double step = map->getResolution() * 0.5;
++  for (size_t i = 0; i < path.poses.size(); ++i) {
++    const auto & b = path.poses[i].pose;
++    const double byaw = tf2::getYaw(b.orientation);
++    if (!validOutputPose(b.position.x, b.position.y, byaw, map,
++      footprint, radius, allow_unknown)) {return false;}
++    if (i == 0) {continue;}
++    const auto & a = path.poses[i - 1].pose;
++    const double ayaw = tf2::getYaw(a.orientation);
++    const double dyaw = std::remainder(byaw - ayaw, 2.0 * M_PI);
++    const double length = std::hypot(b.position.x - a.position.x, b.position.y - a.position.y);
++    // Bound displacement of any footprint point, including rotation. These
++    // samples guard gaps between returned poses; finite sampling is not CCD.
++    const double count = std::ceil((length + reach * std::abs(dyaw)) / step);
++    if (!std::isfinite(count) || count > 100000) {return false;}
++    const size_t n = std::max<size_t>(1, static_cast<size_t>(count));
++    for (size_t j = 1; j < n; ++j) {
++      const double t = static_cast<double>(j) / n;
++      if (!validOutputPose(
++          a.position.x + t * (b.position.x - a.position.x),
++          a.position.y + t * (b.position.y - a.position.y), ayaw + t * dyaw,
++          map, footprint, radius, allow_unknown)) {return false;}
++    }
++  }
++  return true;
++}
++}  // namespace nav2_smac_planner
++#endif
+--- a/include/nav2_smac_planner/smac_planner_hybrid.hpp
++++ b/include/nav2_smac_planner/smac_planner_hybrid.hpp
+@@ -106,21 +106,21 @@
+   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> _costmap_ros;
+   std::unique_ptr<CostmapDownsampler> _costmap_downsampler;
+   std::string _global_frame, _name;
+-  float _lookup_table_dim;
+-  float _tolerance;
+-  bool _downsample_costmap;
+-  int _downsampling_factor;
+-  double _angle_bin_size;
+-  unsigned int _angle_quantizations;
+-  bool _allow_unknown;
+-  int _max_iterations;
+-  int _max_on_approach_iterations;
+-  int _terminal_checking_interval;
++  float _lookup_table_dim{};
++  float _tolerance{};
++  bool _downsample_costmap{};
++  int _downsampling_factor{};
++  double _angle_bin_size{};
++  unsigned int _angle_quantizations{};
++  bool _allow_unknown{};
++  int _max_iterations{};
++  int _max_on_approach_iterations{};
++  int _terminal_checking_interval{};
+   SearchInfo _search_info;
+-  double _max_planning_time;
+-  double _lookup_table_size;
+-  double _minimum_turning_radius_global_coords;
+-  bool _debug_visualizations;
++  double _max_planning_time{};
++  double _lookup_table_size{};
++  double _minimum_turning_radius_global_coords{};
++  bool _debug_visualizations{};
+   std::string _motion_model_for_search;
+   MotionModel _motion_model;
+   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr _raw_plan_publisher;
+--- a/include/nav2_smac_planner/types.hpp
++++ b/include/nav2_smac_planner/types.hpp
+@@ -97,13 +97,13 @@
+     node->get_parameter(local_name + "refinement_num", refinement_num_);
+   }
+ 
+-  double tolerance_;
+-  int max_its_;
+-  double w_data_;
+-  double w_smooth_;
+-  bool holonomic_;
+-  bool do_refinement_;
+-  int refinement_num_;
++  double tolerance_{};
++  int max_its_{};
++  double w_data_{};
++  double w_smooth_{};
++  bool holonomic_{};
++  bool do_refinement_{};
++  int refinement_num_{};
+ };
+ 
+ /**
+--- a/include/nav2_smac_planner/utils.hpp
++++ b/include/nav2_smac_planner/utils.hpp
+@@ -46,9 +46,9 @@
+ {
+   geometry_msgs::msg::Pose msg;
+   msg.position.x =
+-    static_cast<float>(costmap->getOriginX()) + mx * costmap->getResolution();
++    costmap->getOriginX() + mx * costmap->getResolution();
+   msg.position.y =
+-    static_cast<float>(costmap->getOriginY()) + my * costmap->getResolution();
++    costmap->getOriginY() + my * costmap->getResolution();
+   return msg;
+ }
+ 
+--- a/package.xml
++++ b/package.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0"?>
+ <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+ <package format="3">
+-  <name>nav2_smac_planner</name>
++  <name>navigation_smac_planner</name>
+   <version>1.3.13</version>
+   <description>Smac global planning plugin: A*, Hybrid-A*, State Lattice</description>
+   <maintainer email="stevenmacenski@gmail.com">Steve Macenski</maintainer>
+--- a/smac_plugin_hybrid.xml
++++ b/smac_plugin_hybrid.xml
+@@ -1,5 +1,5 @@
+-<library path="nav2_smac_planner">
+-	<class type="nav2_smac_planner::SmacPlannerHybrid" base_class_type="nav2_core::GlobalPlanner">
++<library path="navigation_smac_planner">
++	<class name="navigation_smac_planner::SmacPlannerHybrid" type="nav2_smac_planner::SmacPlannerHybrid" base_class_type="nav2_core::GlobalPlanner">
+ 	  <description>Hybrid-A* SMAC planner</description>
+ 	</class>
+ </library>
+--- a/src/analytic_expansion.cpp
++++ b/src/analytic_expansion.cpp
+@@ -124,7 +124,7 @@
+               expansion[1].proposed_coords.y - expansion[0].proposed_coords.y);
+             const float & weight = expansion[0].node->motion_table.cost_penalty;
+             for (auto iter = expansion.begin(); iter != expansion.end(); ++iter) {
+-              normalized_cost = iter->node->getCost() / 252.0f;
++              normalized_cost = iter->cost / 252.0f;
+               // Search's Traversal Cost Function
+               score += distance * (1.0 + weight * normalized_cost);
+             }
+@@ -207,6 +207,7 @@
+ 
+   // Pre-allocate
+   NodePtr prev(node);
++  const Coordinates goal_coords = goal->pose;
+   uint64_t index = 0;
+   NodePtr next(nullptr);
+   float angle = 0.0;
+@@ -223,7 +224,20 @@
+     theta = (reals[2] < 0.0) ? (reals[2] + 2.0 * M_PI) : reals[2];
+     theta = (theta > 2.0 * M_PI) ? (theta - 2.0 * M_PI) : theta;
+     angle = node->motion_table.getAngle(theta);
+-
++    if (i == num_intervals) {
++      reals[0] = goal_coords.x;
++      reals[1] = goal_coords.y;
++      angle = goal_coords.theta;
++    }
++
++    if (_collision_checker->outsideRange(
++        _collision_checker->getCostmap()->getSizeInCellsX(), reals[0]) ||
++      _collision_checker->outsideRange(
++        _collision_checker->getCostmap()->getSizeInCellsY(), reals[1]) ||
++      _collision_checker->outsideRange(_dim_3_size, angle)) {
++      failure = true;
++      break;
++    }
+     // Turn the pose into a node, and check if it is valid
+     index = NodeT::getIndex(
+       static_cast<unsigned int>(reals[0]),
+@@ -234,7 +248,9 @@
+       Coordinates initial_node_coords = next->pose;
+       proposed_coordinates = {static_cast<float>(reals[0]), static_cast<float>(reals[1]), angle};
+       next->setPose(proposed_coordinates);
+-      if (next->isNodeValid(_traverse_unknown, _collision_checker) && next != prev) {
++      if (next != prev && next->isNodeValid(_traverse_unknown, _collision_checker) &&
++        _collision_checker->isMotionValid(prev->pose.x, prev->pose.y, prev->pose.theta,
++          next->pose.x, next->pose.y, next->pose.theta, _traverse_unknown)) {
+         // Save the node, and its previous coordinates in case we need to abort
+         possible_nodes.emplace_back(next, initial_node_coords, proposed_coordinates);
+         node_costs.emplace_back(next->getCost());
+@@ -242,6 +258,7 @@
+       } else {
+         // Abort
+         next->setPose(initial_node_coords);
++        next->isNodeValid(_traverse_unknown, _collision_checker);
+         failure = true;
+         break;
+       }
+@@ -289,6 +306,7 @@
+   for (const auto & node_pose : possible_nodes) {
+     const auto & n = node_pose.node;
+     n->setPose(node_pose.initial_coords);
++    n->isNodeValid(_traverse_unknown, _collision_checker);
+   }
+ 
+   if (failure) {
+--- a/src/collision_checker.cpp
++++ b/src/collision_checker.cpp
+@@ -13,6 +13,8 @@
+ // limitations under the License. Reserved.
+ 
+ #include "nav2_smac_planner/collision_checker.hpp"
++#include "nav2_smac_planner/utils.hpp"
++#include "nav2_smac_planner/output_validation.hpp"
+ 
+ namespace nav2_smac_planner
+ {
+@@ -107,24 +109,23 @@
+   const float & angle_bin,
+   const bool & traverse_unknown)
+ {
+-  // Check to make sure cell is inside the map
+-  if (outsideRange(costmap_->getSizeInCellsX(), x) ||
+-    outsideRange(costmap_->getSizeInCellsY(), y))
++  // Continuous map coordinates have their origin at the cell boundary,
++  // exactly as getWorldCoords() uses for the returned path.
++  center_cost_ = OCCUPIED;
++  if (!costmap_ || outsideRange(costmap_->getSizeInCellsX(), x) ||
++    outsideRange(costmap_->getSizeInCellsY(), y) ||
++    !std::isfinite(angle_bin) || angle_bin < 0.0f || angle_bin >= angles_.size())
+   {
+     return true;
+   }
+-
+-  // Assumes setFootprint already set
+-  center_cost_ = static_cast<float>(costmap_->getCost(
+-    static_cast<unsigned int>(x + 0.5f), static_cast<unsigned int>(y + 0.5f)));
++  const auto world = getWorldCoords(x, y, costmap_);
++  unsigned int mx, my;
++  if (!costmap_->worldToMap(world.position.x, world.position.y, mx, my)) {return true;}
++  center_cost_ = static_cast<float>(costmap_->getCost(mx, my));
+ 
+   if (!footprint_is_radius_) {
+-    // if footprint, then we check for the footprint's points, but first see
+-    // if the robot is even potentially in an inscribed collision
+-    if (center_cost_ < possible_collision_cost_ && possible_collision_cost_ > 0.0f) {
+-      return false;
+-    }
+-
++    // Do not use an inflation-based fast-free shortcut: it has not been
++    // proven conservative for subcell poses and footprints crossing map bounds.
+     // If its inscribed, in collision, or unknown in the middle,
+     // no need to even check the footprint, its invalid
+     if (center_cost_ == UNKNOWN && !traverse_unknown) {
+@@ -138,18 +139,19 @@
+     // if possible inscribed, need to check actual footprint pose.
+     // Use precomputed oriented footprints are done on initialization,
+     // offset by translation value to collision check
+-    double wx, wy;
+-    costmap_->mapToWorld(static_cast<double>(x), static_cast<double>(y), wx, wy);
++    const double wx = world.position.x, wy = world.position.y;
+     geometry_msgs::msg::Point new_pt;
+-    const nav2_costmap_2d::Footprint & oriented_footprint = oriented_footprints_[angle_bin];
++    const nav2_costmap_2d::Footprint & oriented_footprint = oriented_footprints_[static_cast<unsigned int>(angle_bin)];
+     nav2_costmap_2d::Footprint current_footprint;
+     current_footprint.reserve(oriented_footprint.size());
+     for (unsigned int i = 0; i < oriented_footprint.size(); ++i) {
+       new_pt.x = wx + oriented_footprint[i].x;
+       new_pt.y = wy + oriented_footprint[i].y;
++      if (!costmap_->worldToMap(new_pt.x, new_pt.y, mx, my)) {return true;}
+       current_footprint.push_back(new_pt);
+     }
+ 
++    if (current_footprint.size() < 3) {return true;}
+     float footprint_cost = static_cast<float>(footprintCost(current_footprint));
+ 
+     if (footprint_cost == UNKNOWN && traverse_unknown) {
+@@ -173,6 +175,9 @@
+   const unsigned int & i,
+   const bool & traverse_unknown)
+ {
++  center_cost_ = OCCUPIED;
++  if (!costmap_ || i >= static_cast<size_t>(costmap_->getSizeInCellsX()) *
++    costmap_->getSizeInCellsY()) {return true;}
+   center_cost_ = costmap_->getCost(i);
+   if (center_cost_ == UNKNOWN && traverse_unknown) {
+     return false;
+@@ -182,6 +187,24 @@
+   return center_cost_ >= INSCRIBED;
+ }
+ 
++bool GridCollisionChecker::isMotionValid(
++  float x0, float y0, float bin0, float x1, float y1, float bin1, bool traverse_unknown)
++{
++  if (outsideRange(angles_.size(), bin0) || outsideRange(angles_.size(), bin1)) {
++    return false;
++  }
++  nav_msgs::msg::Path edge;
++  geometry_msgs::msg::PoseStamped p;
++  p.pose = getWorldCoords(x0, y0, costmap_);
++  p.pose.orientation = getWorldOrientation(angles_[static_cast<unsigned int>(bin0)]);
++  edge.poses.push_back(p);
++  p.pose = getWorldCoords(x1, y1, costmap_);
++  p.pose.orientation = getWorldOrientation(angles_[static_cast<unsigned int>(bin1)]);
++  edge.poses.push_back(p);
++  return validOutputPath(edge, costmap_, unoriented_footprint_, footprint_is_radius_,
++    traverse_unknown);
++}
++
+ float GridCollisionChecker::getCost()
+ {
+   // Assumes inCollision called prior
+@@ -190,7 +213,7 @@
+ 
+ bool GridCollisionChecker::outsideRange(const unsigned int & max, const float & value)
+ {
+-  return value < 0.0f || value > max;
++  return !std::isfinite(value) || value < 0.0f || value >= max;
+ }
+ 
+ }  // namespace nav2_smac_planner
+--- a/src/node_hybrid.cpp
++++ b/src/node_hybrid.cpp
+@@ -377,10 +377,8 @@
+   const bool & traverse_unknown,
+   GridCollisionChecker * collision_checker)
+ {
+-  // Already found, we can return the result
+-  if (!std::isnan(_cell_cost)) {
+-    return _is_node_valid;
+-  }
++  // A graph index can be visited at different continuous subcell poses.
++  // Recompute validity and cost together; a cell-wide boolean cache is unsafe.
+ 
+   _is_node_valid = !collision_checker->inCollision(
+     this->pose.x, this->pose.y, this->pose.theta /*bin number*/, traverse_unknown);
+@@ -844,6 +842,12 @@
+   const MotionPoses motion_projections = motion_table.getProjections(this);
+ 
+   for (unsigned int i = 0; i != motion_projections.size(); i++) {
++    if (collision_checker->outsideRange(
++        collision_checker->getCostmap()->getSizeInCellsX(), motion_projections[i]._x) ||
++      collision_checker->outsideRange(
++        collision_checker->getCostmap()->getSizeInCellsY(), motion_projections[i]._y) ||
++      collision_checker->outsideRange(motion_table.num_angle_quantization,
++        motion_projections[i]._theta)) {continue;}
+     index = NodeHybrid::getIndex(
+       static_cast<unsigned int>(motion_projections[i]._x),
+       static_cast<unsigned int>(motion_projections[i]._y),
+@@ -859,11 +863,14 @@
+           motion_projections[i]._x,
+           motion_projections[i]._y,
+           motion_projections[i]._theta));
+-      if (neighbor->isNodeValid(traverse_unknown, collision_checker)) {
++      if (neighbor->isNodeValid(traverse_unknown, collision_checker) &&
++        collision_checker->isMotionValid(pose.x, pose.y, pose.theta,
++          neighbor->pose.x, neighbor->pose.y, neighbor->pose.theta, traverse_unknown)) {
+         neighbor->setMotionPrimitiveIndex(i, motion_projections[i]._turn_dir);
+         neighbors.push_back(neighbor);
+       } else {
+         neighbor->setPose(initial_node_coords);
++        neighbor->isNodeValid(traverse_unknown, collision_checker);
+       }
+     }
+   }
+--- a/src/smac_planner_hybrid.cpp
++++ b/src/smac_planner_hybrid.cpp
+@@ -21,6 +21,7 @@
+ 
+ #include "Eigen/Core"
+ #include "nav2_smac_planner/smac_planner_hybrid.hpp"
++#include "nav2_smac_planner/output_validation.hpp"
+ 
+ // #define BENCHMARK_TESTING
+ 
+@@ -64,9 +65,9 @@
+ 
+   RCLCPP_INFO(_logger, "Configuring %s of type SmacPlannerHybrid", name.c_str());
+ 
+-  int angle_quantizations;
+-  double analytic_expansion_max_length_m;
+-  bool smooth_path;
++  int angle_quantizations{};
++  double analytic_expansion_max_length_m{};
++  bool smooth_path{};
+ 
+   // General planner params
+   nav2_util::declare_parameter_if_not_declared(
+@@ -354,6 +355,17 @@
+ 
+   std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(_costmap->getMutex()));
+ 
++  const auto output_footprint = _costmap_ros->getRobotFootprint();
++  auto valid_output = [&](const nav_msgs::msg::Path & candidate) {
++      return validOutputPath(candidate, _costmap, output_footprint,
++        _costmap_ros->getUseRadius(), _allow_unknown);
++    };
++  if (!validOutputPose(start.pose.position.x, start.pose.position.y,
++      tf2::getYaw(start.pose.orientation), _costmap, output_footprint,
++      _costmap_ros->getUseRadius(), _allow_unknown)) {
++    throw nav2_core::StartOccupied("Actual start footprint is invalid");
++  }
++
+   // Downsample costmap, if required
+   nav2_costmap_2d::Costmap2D * costmap = _costmap;
+   if (_costmap_downsampler) {
+@@ -391,6 +403,10 @@
+   }
+   _a_star->setStart(mx_start, my_start, static_cast<unsigned int>(orientation_bin));
+ 
++  if (!std::isfinite(goal.pose.position.x) || !std::isfinite(goal.pose.position.y) ||
++    !std::isfinite(tf2::getYaw(goal.pose.orientation))) {
++    throw nav2_core::GoalOutsideMapBounds("Non-finite goal pose");
++  }
+   // Set goal point, in A* bin search coordinates
+   if (!costmap->worldToMapContinuous(
+     goal.pose.position.x,
+@@ -431,6 +447,11 @@
+     pose.pose = start.pose;
+     pose.pose.orientation = goal.pose.orientation;
+     plan.poses.push_back(pose);
++    auto rotation = plan;
++    rotation.poses.insert(rotation.poses.begin(), start);
++    if (!valid_output(rotation)) {
++      throw nav2_core::NoValidPathCouldBeFound("Same-cell rotation footprint is invalid");
++    }
+ 
+     // Publish raw path for debug
+     if (_raw_plan_publisher->get_subscription_count() > 0) {
+@@ -536,9 +557,24 @@
+     " milliseconds with " << num_iterations << " iterations." << std::endl;
+ #endif
+ 
++  // Validate the actual raw output, including subcell positions and bin yaw.
++  // Also check the short orientation connection from the actual start pose.
++  auto raw_plan = plan;
++  auto start_connection = plan;
++  start_connection.poses.insert(start_connection.poses.begin(), start);
++  if (!valid_output(start_connection)) {
++    throw nav2_core::NoValidPathCouldBeFound("Raw path footprint or segment is invalid");
++  }
++
+   // Smooth plan
+   if (_smoother && num_iterations > 1) {
+     _smoother->smooth(plan, costmap, time_remaining);
++    auto candidate = plan;
++    candidate.poses.insert(candidate.poses.begin(), start);
++    if (!valid_output(candidate)) {
++      RCLCPP_WARN(_logger, "Smoothed footprint invalid; returning verified raw path");
++      plan = std::move(raw_plan);
++    }
+   }
+ 
+ #ifdef BENCHMARK_TESTING
+--- a/src/smoother.cpp
++++ b/src/smoother.cpp
+@@ -156,11 +156,13 @@
+       // validate update is admissible, only checks cost if a valid costmap pointer is provided
+       float cost = 0.0;
+       if (costmap) {
+-        costmap->worldToMap(
+-          getFieldByDim(new_path.poses[i], 0),
+-          getFieldByDim(new_path.poses[i], 1),
+-          mx, my);
+-        cost = static_cast<float>(costmap->getCost(mx, my));
++        if (costmap->worldToMap(
++            getFieldByDim(new_path.poses[i], 0),
++            getFieldByDim(new_path.poses[i], 1), mx, my)) {
++          cost = static_cast<float>(costmap->getCost(mx, my));
++        } else {
++          cost = OCCUPIED;
++        }
+       }
+ 
+       if (cost > MAX_NON_OBSTACLE && cost != UNKNOWN) {
+@@ -366,8 +368,9 @@
+ 
+     // Check for collision
+     unsigned int mx, my;
+-    costmap->worldToMap(x, y, mx, my);
+-    if (static_cast<float>(costmap->getCost(mx, my)) >= INSCRIBED) {
++    if (!std::isfinite(x) || !std::isfinite(y) ||
++      !costmap->worldToMap(x, y, mx, my) ||
++      static_cast<float>(costmap->getCost(mx, my)) >= INSCRIBED) {
+       expansion.in_collision = true;
+     }
+ 

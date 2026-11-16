@@ -7,8 +7,9 @@ from forge_msgs import PolicyCommand, PolicyCommandStatus
 
 
 class PolicyEndpoint:
-    def __init__(self, node, policy_id):
+    def __init__(self, node, policy_id, *, runtime_output="status"):
         self.node, self.id, self.cache = node, policy_id, OrderedDict()
+        self.runtime_output = runtime_output
 
     def receive(self, event):
         command = PolicyCommand.from_arrow(event["value"])
@@ -49,7 +50,7 @@ class PolicyEndpoint:
 
     def runtime(self, status="running", message="", **outputs):
         self.node.send_output(
-            "status",
+            self.runtime_output,
             PolicyCommandStatus.from_outputs(
                 policy_id=self.id,
                 command="runtime",

@@ -14,6 +14,7 @@ def check_runtime():
         "lifecycle_msgs.srv",
         "nav_msgs.msg",
         "geometry_msgs.msg",
+        "sensor_msgs.msg",
         "tf2_ros",
     ]:
         module = importlib.import_module(name)

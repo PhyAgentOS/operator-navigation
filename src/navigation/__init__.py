@@ -1,3 +1,3 @@
 """navigation Forge component."""
 
-__version__ = "0.1.1"
+__version__ = "0.3.8"

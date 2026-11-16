@@ -7,3 +7,4 @@ build/
 dist/
 out/
 *.spec
+backends/smac/install/

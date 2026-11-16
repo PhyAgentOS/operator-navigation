@@ -18,6 +18,9 @@ from navigation.velocity import VelocityGate
 
 
 def run(cfg: dict) -> None:
+    from .backend import materialize
+
+    cfg = materialize(cfg)
     import rclpy
     from action_msgs.msg import GoalStatus
     from composition_interfaces.srv import ListNodes, LoadNode
@@ -93,8 +96,51 @@ def run(cfg: dict) -> None:
             )
         return parameters
 
+    if cfg.get("snapshot_dir"):
+        from nav2_msgs.msg import Costmap
+        from nav_msgs.msg import Path as RosPath
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
+        from .snapshot import pose_value, write_snapshot
+
+        def on_path(msg):
+            write_snapshot(
+                cfg["snapshot_dir"],
+                "path",
+                {
+                    "frame_id": msg.header.frame_id,
+                    "points": [[p.pose.position.x, p.pose.position.y] for p in msg.poses],
+                },
+            )
+
+        def on_costmap(msg):
+            m = msg.metadata
+            write_snapshot(
+                cfg["snapshot_dir"],
+                "costmap",
+                {
+                    "frame_id": msg.header.frame_id,
+                    "width": m.size_x,
+                    "height": m.size_y,
+                    "resolution": m.resolution,
+                    "origin": pose_value(m.origin),
+                    "data": list(msg.data),
+                },
+            )
+
+        ros.create_subscription(RosPath, cfg.get("path_topic", "/plan"), on_path, 10)
+        ros.create_subscription(
+            Costmap,
+            cfg.get("costmap_topic", "/global_costmap/costmap_raw"),
+            on_costmap,
+            QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
     dora = Node()
-    endpoint = PolicyEndpoint(dora, "navigation")
+    endpoint = PolicyEndpoint(dora, "navigation", runtime_output=cfg.get("runtime_status_output", "status"))
     backend = OwnedProcess()
     gate = VelocityGate(
         max_vx=cfg.get("max_vx_mps", 0.08),
@@ -102,6 +148,11 @@ def run(cfg: dict) -> None:
         timeout_seconds=cfg.get("velocity_timeout_seconds", 0.25),
     )
     control, health = {}, {}
+    fusion = None
+    if cfg.get("map_fusion", {}).get("enabled", False):
+        from navigation.fusion import NavigationMapFusion
+
+        fusion = NavigationMapFusion(ros, buffer, cfg["map_fusion"], cfg.get("snapshot_dir"))
     state, start_request, start_deadline = "idle", None, 0
     current = handle = None
     goal_at = 0.0
@@ -129,13 +180,23 @@ def run(cfg: dict) -> None:
 
     ros.create_subscription(Odometry, cfg.get("odometry_topic", "/odom"), on_odom, 20)
 
+    def permission_failure(now):
+        if control.get("armed") is not True:
+            return "行驶授权已撤销"
+        if health.get("healthy") is not True:
+            return "定位未通过校核"
+        age = now - control.get("issued_monotonic", 0)
+        if not 0 <= age < 0.35:
+            return f"行驶授权心跳过期（{age:.3f} s）"
+        age = now - health.get("issued_monotonic", 0)
+        if not 0 <= age < 0.65:
+            return f"定位反馈过期（{age:.3f} s）"
+        if fusion is not None and not fusion.ready:
+            return "实时障碍地图观测或坐标变换未就绪"
+        return None
+
     def permitted(now):
-        return (
-            control.get("armed") is True
-            and health.get("healthy") is True
-            and 0 <= now - control.get("issued_monotonic", 0) < 0.35
-            and 0 <= now - health.get("issued_monotonic", 0) < 0.65
-        )
+        return permission_failure(now) is None
 
     def on_velocity(msg):
         if not all(math.isfinite(v) for v in (msg.linear.x, msg.linear.y, msg.angular.z)):
@@ -274,6 +335,17 @@ def run(cfg: dict) -> None:
                                 "params_file:=" + cfg["backend_params"],
                                 "mode:=navigation",
                                 "autostart:=false",
+                                *(
+                                    [
+                                        "command_topic:="
+                                        + cfg.get("command_topic", "/cmd_vel_nav"),
+                                        "smoothed_topic:="
+                                        + cfg.get("smoothed_topic", "/cmd_vel_smoothed"),
+                                    ]
+                                    if Path(cfg["launch_file"]).resolve()
+                                    == Path(__file__).with_name("backend.launch.py").resolve()
+                                    else []
+                                ),
                             ],
                             cwd=Path(cfg["session_dir"]),
                             log_path=Path(cfg["session_dir"]) / "nav2.log",
@@ -291,9 +363,8 @@ def run(cfg: dict) -> None:
                             or refresh_request is not None
                             or not permitted(time.monotonic())
                         ):
-                            endpoint.emit(
-                                command, "rejected", "已有任务，或底盘/定位/页面授权未就绪"
-                            )
+                            endpoint.emit(command, "rejected", permission_failure(time.monotonic())
+                                          or "已有导航或地图刷新任务")
                             continue
                         try:
                             x, y, yaw = planar_pose(command.inputs().get("pose"))
@@ -377,7 +448,7 @@ def run(cfg: dict) -> None:
             if gate.enabled != allowed:
                 gate.set_enabled(allowed)
             if current is not None and not permitted(now):
-                request_cancel("定位、页面连接或行驶授权失效，已停车")
+                request_cancel(str(permission_failure(now)) + "，已停车")
             if current is not None and now - goal_at > cfg.get("goal_timeout_seconds", 600):
                 request_cancel("任务超时，已停车")
             if current is not None and handle is None and now - goal_at > 5:
@@ -390,6 +461,8 @@ def run(cfg: dict) -> None:
                 current, cancel_reason, cancel_sent = None, None, False
             for _ in range(12):
                 rclpy.spin_once(ros, timeout_sec=0)
+            if fusion is not None:
+                fusion.tick(health, time.monotonic())
             if state in ("starting", "running") and backend.poll() is not None:
                 raise RuntimeError("Nav2 launch exited")
             if state == "starting":
@@ -524,7 +597,10 @@ def run(cfg: dict) -> None:
                     },
                 )
                 last_output = now
-            if now - last_runtime > 0.4:
+            # The control lease lasts 0.35 s; acknowledgements must arrive well
+            # inside it. A 0.4 s status period creates stale-ack gaps even while
+            # fresh control heartbeats continue arriving normally.
+            if now - last_runtime > 0.1:
                 endpoint.runtime(
                     message="Nav2 " + state,
                     state=state,
@@ -532,6 +608,10 @@ def run(cfg: dict) -> None:
                     distance_remaining=distance,
                     goal_request_id=None if current is None else current.request_id,
                     velocity_enabled=gate.enabled,
+                    permission_failure=permission_failure(now),
+                    control_armed=control.get("armed") is True,
+                    control_authorization_id=control.get("authorization_id"),
+                    control_issued_monotonic=control.get("issued_monotonic", 0),
                 )
                 last_runtime = now
     except Exception as exc:

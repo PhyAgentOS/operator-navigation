@@ -24,3 +24,17 @@ def test_reject_invalid_domain(tmp_path, domain):
     file.write_text(yaml.safe_dump(config))
     with pytest.raises(ValueError, match="ros_domain_id"):
         load_config(file)
+
+
+def test_fusion_cannot_publish_over_its_localization_prior(tmp_path):
+    config = yaml.safe_load(EXAMPLE.read_text())
+    config["map_fusion"] = {
+        "enabled": True,
+        "prior_topic": "/map",
+        "output_topic": "/map",
+        "scan_topic": "/scan",
+    }
+    file = tmp_path / "config.yaml"
+    file.write_text(yaml.safe_dump(config))
+    with pytest.raises(ValueError, match="localization prior"):
+        load_config(file)
