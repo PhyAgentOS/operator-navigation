@@ -125,12 +125,15 @@
     * @brief Get the angles of the precomputed footprint orientations
 --- a/include/nav2_smac_planner/output_validation.hpp
 +++ b/include/nav2_smac_planner/output_validation.hpp
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,96 @@
 +// Copyright 2026 Navigation contributors. Licensed under Apache-2.0.
 +#ifndef NAVIGATION_SMAC_OUTPUT_VALIDATION_HPP_
 +#define NAVIGATION_SMAC_OUTPUT_VALIDATION_HPP_
 +#include <algorithm>
 +#include <cmath>
++#include <stdexcept>
++#include <nav2_costmap_2d/footprint.hpp>
++#include <nav2_costmap_2d/cost_values.hpp>
 +#include <nav_msgs/msg/path.hpp>
 +#include <nav2_costmap_2d/footprint_collision_checker.hpp>
 +#include <tf2/utils.h>
@@ -138,6 +141,18 @@
 +
 +namespace nav2_smac_planner
 +{
++// Planning-only uncertainty reserve. The runtime costmaps, validator and
++// controller continue to use their unchanged full padded physical footprint.
++inline nav2_costmap_2d::Footprint planningFootprint(
++  nav2_costmap_2d::Footprint footprint, double margin)
++{
++  if (!std::isfinite(margin) || margin < 0.0) {
++    throw std::invalid_argument("planning_clearance_margin must be finite and nonnegative");
++  }
++  nav2_costmap_2d::padFootprint(footprint, margin);
++  return footprint;
++}
++
 +// The caller holds the costmap lock and a single footprint snapshot. This checks
 +// native rasterized contours, not an exact continuous 3-D swept volume.
 +inline bool validOutputPose(
@@ -209,7 +224,7 @@
 +#endif
 --- a/include/nav2_smac_planner/smac_planner_hybrid.hpp
 +++ b/include/nav2_smac_planner/smac_planner_hybrid.hpp
-@@ -106,21 +106,21 @@
+@@ -106,21 +106,22 @@
    std::shared_ptr<nav2_costmap_2d::Costmap2DROS> _costmap_ros;
    std::unique_ptr<CostmapDownsampler> _costmap_downsampler;
    std::string _global_frame, _name;
@@ -225,6 +240,7 @@
 -  int _terminal_checking_interval;
 +  float _lookup_table_dim{};
 +  float _tolerance{};
++  double _planning_clearance_margin{0.0};
 +  bool _downsample_costmap{};
 +  int _downsampling_factor{};
 +  double _angle_bin_size{};
@@ -553,25 +569,94 @@
  
    // General planner params
    nav2_util::declare_parameter_if_not_declared(
-@@ -354,6 +355,17 @@
+@@ -85,6 +86,15 @@
+   nav2_util::declare_parameter_if_not_declared(
+     node, name + ".tolerance", rclcpp::ParameterValue(0.25));
+   _tolerance = static_cast<float>(node->get_parameter(name + ".tolerance").as_double());
++  rcl_interfaces::msg::ParameterDescriptor clearance_descriptor;
++  clearance_descriptor.read_only = true;
++  clearance_descriptor.description = "Additional planning-only footprint reserve in metres";
++  nav2_util::declare_parameter_if_not_declared(
++    node, name + ".planning_clearance_margin", rclcpp::ParameterValue(0.0), clearance_descriptor);
++  node->get_parameter(name + ".planning_clearance_margin", _planning_clearance_margin);
++  (void)planningFootprint(_costmap_ros->getRobotFootprint(), _planning_clearance_margin);
++  RCLCPP_INFO(_logger, "Planning-only clearance margin: %.3f m", _planning_clearance_margin);
++
+   nav2_util::declare_parameter_if_not_declared(
+     node, name + ".allow_unknown", rclcpp::ParameterValue(true));
+   node->get_parameter(name + ".allow_unknown", _allow_unknown);
+@@ -221,7 +231,7 @@
+   // Initialize collision checker
+   _collision_checker = GridCollisionChecker(_costmap_ros, _angle_quantizations, node);
+   _collision_checker.setFootprint(
+-    _costmap_ros->getRobotFootprint(),
++    planningFootprint(_costmap_ros->getRobotFootprint(), _planning_clearance_margin),
+     _costmap_ros->getUseRadius(),
+     findCircumscribedCost(_costmap_ros));
+ 
+@@ -354,6 +364,52 @@
  
    std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(*(_costmap->getMutex()));
  
-+  const auto output_footprint = _costmap_ros->getRobotFootprint();
++  const auto physical_footprint = _costmap_ros->getRobotFootprint();
++  auto physical_pose_valid = [&](const geometry_msgs::msg::PoseStamped & pose) {
++      return validOutputPose(pose.pose.position.x, pose.pose.position.y,
++        tf2::getYaw(pose.pose.orientation), _costmap, physical_footprint,
++        _costmap_ros->getUseRadius(), _allow_unknown);
++    };
++  if (!physical_pose_valid(start)) {
++    throw nav2_core::StartOccupied("Actual start footprint is invalid");
++  }
++  if (!physical_pose_valid(goal)) {
++    throw nav2_core::GoalOccupied("Actual goal footprint is invalid");
++  }
++  // A reserve is additional to the unchanged full padded physical footprint.
++  // A legitimate close docking target can cap this extra reserve. Never shrink
++  // the physical footprint or accept a physically occupied endpoint.
++  auto output_footprint = physical_footprint;
++  double effective_clearance = 0.0;
++  bool endpoints_fit = false;
++  for (int quarter = 4; quarter >= 0; --quarter) {
++    const double margin = _planning_clearance_margin * quarter / 4.0;
++    const auto candidate = planningFootprint(physical_footprint, margin);
++    auto fits = [&](const geometry_msgs::msg::PoseStamped & pose) {
++        const double yaw = tf2::getYaw(pose.pose.orientation);
++        const double bin_yaw = std::round(yaw / _angle_bin_size) * _angle_bin_size;
++        return validOutputPose(pose.pose.position.x, pose.pose.position.y, yaw,
++                 _costmap, candidate, _costmap_ros->getUseRadius(), _allow_unknown) &&
++               validOutputPose(pose.pose.position.x, pose.pose.position.y, bin_yaw,
++                 _costmap, candidate, _costmap_ros->getUseRadius(), _allow_unknown);
++      };
++    if (fits(start) && fits(goal)) {
++      output_footprint = candidate;
++      effective_clearance = margin;
++      endpoints_fit = true;
++      break;
++    }
++  }
++  if (!endpoints_fit) {
++    throw nav2_core::NoValidPathCouldBeFound("Actual endpoint or search-bin footprint is invalid");
++  }
++  RCLCPP_INFO(_logger, "Planning reserve requested %.3f m, endpoint-compatible %.3f m",
++    _planning_clearance_margin, effective_clearance);
 +  auto valid_output = [&](const nav_msgs::msg::Path & candidate) {
 +      return validOutputPath(candidate, _costmap, output_footprint,
 +        _costmap_ros->getUseRadius(), _allow_unknown);
 +    };
-+  if (!validOutputPose(start.pose.position.x, start.pose.position.y,
-+      tf2::getYaw(start.pose.orientation), _costmap, output_footprint,
-+      _costmap_ros->getUseRadius(), _allow_unknown)) {
-+    throw nav2_core::StartOccupied("Actual start footprint is invalid");
-+  }
 +
    // Downsample costmap, if required
    nav2_costmap_2d::Costmap2D * costmap = _costmap;
    if (_costmap_downsampler) {
-@@ -391,6 +403,10 @@
+@@ -363,7 +419,7 @@
+ 
+   // Set collision checker and costmap information
+   _collision_checker.setFootprint(
+-    _costmap_ros->getRobotFootprint(),
++    output_footprint,
+     _costmap_ros->getUseRadius(),
+     findCircumscribedCost(_costmap_ros));
+   _a_star->setCollisionChecker(&_collision_checker);
+@@ -391,6 +447,10 @@
    }
    _a_star->setStart(mx_start, my_start, static_cast<unsigned int>(orientation_bin));
  
@@ -582,7 +667,7 @@
    // Set goal point, in A* bin search coordinates
    if (!costmap->worldToMapContinuous(
      goal.pose.position.x,
-@@ -431,6 +447,11 @@
+@@ -431,6 +491,11 @@
      pose.pose = start.pose;
      pose.pose.orientation = goal.pose.orientation;
      plan.poses.push_back(pose);
@@ -594,7 +679,16 @@
  
      // Publish raw path for debug
      if (_raw_plan_publisher->get_subscription_count() > 0) {
-@@ -536,9 +557,24 @@
+@@ -519,7 +584,7 @@
+       marker_array = std::make_unique<visualization_msgs::msg::MarkerArray>();
+       for (size_t i = 0; i < plan.poses.size(); i++) {
+         const std::vector<geometry_msgs::msg::Point> edge =
+-          transformFootprintToEdges(plan.poses[i].pose, _costmap_ros->getRobotFootprint());
++          transformFootprintToEdges(plan.poses[i].pose, output_footprint);
+         marker_array->markers.push_back(createMarker(edge, i, _global_frame, now));
+       }
+       _planned_footprints_publisher->publish(std::move(marker_array));
+@@ -536,9 +601,24 @@
      " milliseconds with " << num_iterations << " iterations." << std::endl;
  #endif
  
@@ -619,6 +713,24 @@
    }
  
  #ifdef BENCHMARK_TESTING
+@@ -562,7 +642,7 @@
+       auto now = _clock->now();
+       for (size_t i = 0; i < plan.poses.size(); i++) {
+         const std::vector<geometry_msgs::msg::Point> edge =
+-          transformFootprintToEdges(plan.poses[i].pose, _costmap_ros->getRobotFootprint());
++          transformFootprintToEdges(plan.poses[i].pose, output_footprint);
+         marker_array->markers.push_back(createMarker(edge, i, _global_frame, now));
+       }
+       _smoothed_footprints_publisher->publish(std::move(marker_array));
+@@ -764,7 +844,7 @@
+     if (reinit_collision_checker) {
+       _collision_checker = GridCollisionChecker(_costmap_ros, _angle_quantizations, node);
+       _collision_checker.setFootprint(
+-        _costmap_ros->getRobotFootprint(),
++        planningFootprint(_costmap_ros->getRobotFootprint(), _planning_clearance_margin),
+         _costmap_ros->getUseRadius(),
+         findCircumscribedCost(_costmap_ros));
+     }
 --- a/src/smoother.cpp
 +++ b/src/smoother.cpp
 @@ -156,11 +156,13 @@

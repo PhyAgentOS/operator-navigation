@@ -1,41 +1,41 @@
-# 地图导航
+[English](README.md) | [简体中文](README_zh.md)
 
-管理 Nav2 生命周期、目标执行、速度门控与到达核验。机器人型号、话题、速度、车身轮廓和行为树由调用方配置。
+# Map navigation
 
-## 运行要求
+Owns the Nav2 backend, target execution, velocity authorization and arrival verification. Robot frames, footprint, speed limits and behavior trees remain caller configuration.
 
-- Node 版本：`0.3.8`；兼容 **Forge 1**。
-- Linux x86_64、Ubuntu 24.04、Python 3.12 ABI、ROS 2 Jazzy。
-- Dora CLI / Python 绑定 `0.4.1`、Forge Msgs `1.3.0`、Forge Common `1.0.1`。
-- ROS 2、算法后端、Livox 消息工作空间由部署方提供，不包含在 Node 包内。启动前加载对应 ROS setup，运行 `--check-runtime` 检查环境；该命令不连接硬件。
+## Runtime
 
-制品是 `directory_tar_gz`，解压后保留整个 `navigation/` 目录，入口为 `navigation/navigation`。冻结包包含 Dora Python 绑定，不能只升级外部 Dora CLI 来切换到 Forge 2。
+- Node `0.4.0`, Forge 2, Dora CLI/Python bindings 1.0.1, Forge Msgs/Common 2.1.0; exact build dependencies are in `uv.lock`.
+- Ubuntu 24.04 x86_64, Python 3.12 ABI, external ROS 2 Jazzy and required algorithm/message overlays.
+- Source the ROS/overlay setup before launch. `navigation --check-runtime` validates imports and generated wire types without opening hardware.
+- The `directory_tar_gz` artifact contains the complete `navigation/` runtime; execute `navigation/navigation`. Do not move its executable away from its libraries.
+- Forge 1 artifacts remain immutable. Upgrade the binary, Dora and message peers together; changing only the external CLI does not migrate a frozen Node.
 
-## 能力边界与可选配置
+## Behavior
 
-- 包内默认 launch 管理 Nav2 后端；可通过 `launch_file` 替换。命令及平滑话题可配置。
-- `backend_overrides` 生成参数副本；`snapshot_dir` 可输出路径、代价地图等观测。
-- 可选 `map_fusion` 使用连续空闲观测和有限动态记忆生成独立导航障碍图；保留定位先验地图。缺失或被遮挡的回波不是空闲证明；目前要求轴对齐二维地图。
-- 包含独立命名的 `navigation_smac_planner`，修复连续坐标、转移采样和最终路径的碰撞判定一致性。只为 planner 子进程设置插件查找路径，不覆盖系统 ROS 库；该插件要求 Nav2 1.3.13 ABI。
-- 行驶授权由外部协调器提供，本 Node 验证时效、定位和执行反馈，不负责用户登录、网页按钮或 H1 初始化姿态。
-- 源码和可复现 Smac 补丁见 `backends/smac/README.md`；许可证和二进制来源说明见 `THIRD_PARTY_NOTICES.md`。
+The packaged, separately named SMAC planner uses the pinned Nav2 1.3.13 ABI and collision-consistent paos4 patch. It never replaces system ROS libraries. Optional map fusion keeps a separate navigation obstacle map; missing or occluded returns do not establish free space. The same Node includes the additive SegmentGoal/SegmentGoalAngle MPPI critics, scoped to its controller process; native regressions and discovery tests run during packaging. External coordinators own motion permission and task ordering.
 
-这些能力通过配置启用，未配置的可选功能保持关闭。Node 仅拥有自己的后端子进程，不接管其他应用进程或写入机器人厂家工程。快照是运行观测，不是控制接口；读取方负责检查时效。
+Optional capabilities remain disabled when unconfigured. The Node owns only its own child processes; it does not modify vendor projects or control unrelated applications. Snapshots are observations, not a control API; consumers must verify freshness.
 
-## 开发与构建
+`use_sim_time: true` explicitly selects simulation time; the default remains host ROS time. Snapshot writes use an owned same-directory temporary file and atomic replacement.
+
+## Development and packaging
 
 ```bash
-uv sync --group dev
-uv run navigation --check-config --config config/policy.example.yaml
-uv run pytest
-uv run ruff check .
-uv pip install --python .venv/bin/python -r requirements-build.txt
+uv sync --frozen --group dev --group build
+uv run --frozen pytest -q
+uv run --frozen ruff check .
 source /opt/ros/jazzy/setup.bash
-# 按部署环境加载所需消息及算法工作空间。
-# 先按 backends/smac/README.md 构建并放置锁定的插件。
+# Source required algorithm/message overlays for this deployment.
+# Build the pinned planner and MPPI critics in backends/smac and backends/mppi first.
 BUILD_PYTHON=.venv/bin/python bash scripts/build_pyinstaller.sh
 ```
 
-配置示例中的路径和话题需由使用者填入；实际执行应由 Dora dataflow 编排。构建时使用与测试相同的依赖环境。`--version`、配置检查和单元测试不替代 ROS 后端及真机验收。
+Interfaces: [docs/interfaces.md](docs/interfaces.md). Configuration examples are in `config/`; deployment-specific paths and topics must be supplied by the caller. See `THIRD_PARTY_NOTICES.md` for sources and redistribution notices.
 
-接口说明见 [docs/interfaces.md](docs/interfaces.md)，配置在 `config/`，实现位于 `src/`，测试位于 `tests/`。构建工具、测试及源码不随冻结运行制品提供。
+## Versioned releases
+
+Contribute through a personal fork and a PR to `main`. After merging, create a new annotated `vX.Y.Z` tag matching `pyproject.toml` and dispatch **Build versioned release** with that tag. The workflow validates source identity, the Forge/Dora line, locked dependencies, tests and lint, then builds on Ubuntu 24.04 with ROS 2 Jazzy and checks the real frozen entrypoint. It attaches the runtime archive, SHA256 and source metadata to a Draft Release. Review and publish that draft before separately registering the Node in the resource platform.
+
+Archive names use `<entrypoint>-v<version>-ubuntu24.04-x86_64-ros2-jazzy.tar.gz`. Existing releases/assets are never overwritten; changed bytes require a new version. ROS and algorithm backends remain external. Build-time Livox validation compiles only digest-checked official wire definitions and never starts a sensor driver. CI/import tests and simulation do not establish physical hardware acceptance.

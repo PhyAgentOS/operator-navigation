@@ -9,7 +9,7 @@ ROS2 Jazzy, its middleware and generated message bindings are external runtime
 requirements, supplied by the host's ROS installation, not included in this
 archive. Source the ROS setup and message overlay before invoking the Node.
 FAST-LIO2, SLAM Toolbox, most Nav2 components and Livox SDK/driver are separately installed
-backends, each governed by its upstream license. Except for the Smac plugin described below, this archive does not contain
+backends, each governed by its upstream license. Except for the Smac and additive MPPI plugins described below, this archive does not contain
 those backend sources or executables and does not grant redistribution rights
 for proprietary robot SDKs.
 
@@ -31,3 +31,11 @@ Smac includes the upstream robin-hood-hashing implementation, MIT licensed,
 Copyright (c) 2018-2021 Martin Ankerl; its complete license accompanies
 the bundled plugin. OMPL, ROS and other system libraries remain dynamically
 linked host dependencies under their respective licenses.
+
+## Additive MPPI critics
+
+`navigation_sim_mppi_critics` provides Apache-2.0 SegmentGoal/SegmentGoalAngle
+plugins derived from the Nav2 1.3.13 critic interfaces. It leaves the installed
+Nav2 libraries unchanged. The source and native regression tests are in
+`backends/mppi`; the runtime library, license and build receipt are embedded in
+`navigation/mppi_overlay`. Only the controller child receives this plugin path.

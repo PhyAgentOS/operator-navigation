@@ -1,0 +1,8 @@
+<library path="navigation_sim_mppi_critics">
+  <class type="mppi::critics::SegmentGoalAngleCritic" base_class_type="mppi::critics::CriticFunction">
+    <description>Native GoalAngle scoring, activated by distance to the current path segment endpoint.</description>
+  </class>
+  <class type="mppi::critics::SegmentGoalCritic" base_class_type="mppi::critics::CriticFunction">
+    <description>Native Goal scoring, activated and scored against the current path segment endpoint.</description>
+  </class>
+</library>

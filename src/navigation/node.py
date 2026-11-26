@@ -36,8 +36,14 @@ def run(cfg: dict) -> None:
     from tf2_ros import Buffer, TransformListener
 
     rclpy.init(domain_id=cfg["ros_domain_id"])
-    ros = rclpy.create_node("forge_nav2_adapter")
-    buffer = Buffer()
+    simulation_time = cfg.get("use_sim_time", False)
+    if not isinstance(simulation_time, bool):
+        raise ValueError("use_sim_time must be a boolean")
+    ros = rclpy.create_node(
+        "forge_nav2_adapter",
+        parameter_overrides=[ROSParameter("use_sim_time", value=simulation_time)],
+    )
+    buffer = Buffer(node=ros) if simulation_time else Buffer()
     _listener = TransformListener(buffer, ros)
     client = ActionClient(ros, NavigateToPose, "/navigate_to_pose")
     lifecycle = ros.create_client(GetState, "/bt_navigator/get_state")
@@ -157,6 +163,7 @@ def run(cfg: dict) -> None:
     current = handle = None
     goal_at = 0.0
     cancel_reason = None
+    cancel_diagnostics = None
     cancel_sent = False
     distance = None
     last_output = last_runtime = 0.0
@@ -207,10 +214,16 @@ def run(cfg: dict) -> None:
     ros.create_subscription(Twist, cfg.get("safe_velocity_topic", "/cmd_vel"), on_velocity, 10)
 
     def request_cancel(reason):
-        nonlocal cancel_reason, cancel_sent
+        nonlocal cancel_reason, cancel_sent, cancel_diagnostics
         gate.set_enabled(False)
         if current is not None:
-            cancel_reason = reason
+            if cancel_reason is None:
+                cancel_reason = reason
+                cancel_diagnostics = {"reason": reason, "observed_monotonic": time.monotonic(),
+                                      "map_fusion": None if fusion is None else dict(fusion.diagnostics)}
+                if cfg.get("snapshot_dir"):
+                    from .snapshot import write_snapshot
+                    write_snapshot(cfg["snapshot_dir"], "navigation_stop", cancel_diagnostics)
             if handle is not None and not cancel_sent:
                 handle.cancel_goal_async()
                 cancel_sent = True
@@ -220,7 +233,7 @@ def run(cfg: dict) -> None:
         distance = float(msg.feedback.distance_remaining)
 
     def on_result(future, request):
-        nonlocal current, handle, cancel_reason, cancel_sent, distance
+        nonlocal current, handle, cancel_reason, cancel_sent, distance, cancel_diagnostics
         if current is not request:
             return
         gate.set_enabled(False)
@@ -269,10 +282,12 @@ def run(cfg: dict) -> None:
                     "error_message": str(getattr(result.result, "error_msg", "")),
                     "arrival": evidence,
                     "result": "succeeded" if ok else "cancelled" if canceled else "failed",
+                    **({"stop_diagnostics": cancel_diagnostics} if cancel_diagnostics is not None else {}),
                 },
             )
         current = handle = None
         cancel_reason, cancel_sent, distance = None, False, None
+        cancel_diagnostics = None
 
     def on_accepted(future, request):
         nonlocal handle, current, cancel_reason, cancel_sent
@@ -393,6 +408,7 @@ def run(cfg: dict) -> None:
                         )
                         current, goal_at = command, time.monotonic()
                         cancel_reason, cancel_sent = None, False
+                        cancel_diagnostics = None
                         endpoint.emit(command, "accepted", "目标已提交给 Nav2")
                         client.send_goal_async(
                             goal, feedback_callback=on_feedback
@@ -609,6 +625,7 @@ def run(cfg: dict) -> None:
                     goal_request_id=None if current is None else current.request_id,
                     velocity_enabled=gate.enabled,
                     permission_failure=permission_failure(now),
+                    map_fusion_health=None if fusion is None else fusion.diagnostics,
                     control_armed=control.get("armed") is True,
                     control_authorization_id=control.get("authorization_id"),
                     control_issued_monotonic=control.get("issued_monotonic", 0),
