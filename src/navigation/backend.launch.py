@@ -1,4 +1,5 @@
 """Default managed navigation backend; robot topics and parameters are supplied by configuration."""
+import json
 import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -29,10 +30,11 @@ def generate_launch_description():
             if plugin.is_dir():
                 dependencies = (("nav2_core", "nav2_costmap_2d") if name == "planner_server"
                                 else ("nav2_mppi_controller",))
+                expected = json.loads((plugin / "backend.json").read_text())["nav2_version"]
                 for dependency in dependencies:
                     manifest = Path(get_package_share_directory(dependency)) / "package.xml"
-                    if ET.parse(manifest).getroot().findtext("version") != "1.3.13":
-                        raise RuntimeError("Bundled navigation plugins require the validated Nav2 1.3.13 ABI")
+                    if ET.parse(manifest).getroot().findtext("version") != expected:
+                        raise RuntimeError(f"Bundled navigation plugin requires its build-time Nav2 {expected} ABI")
                 environment = {
                     "AMENT_PREFIX_PATH": str(plugin) + os.pathsep + os.environ.get("AMENT_PREFIX_PATH", ""),
                     "LD_LIBRARY_PATH": str(plugin / "lib") + os.pathsep + os.environ.get("LD_LIBRARY_PATH", ""),

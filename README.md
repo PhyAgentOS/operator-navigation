@@ -39,3 +39,5 @@ Interfaces: [docs/interfaces.md](docs/interfaces.md). Configuration examples are
 Contribute through a personal fork and a PR to `main`. After merging, create a new annotated `vX.Y.Z` tag matching `pyproject.toml` and dispatch **Build versioned release** with that tag. The workflow validates source identity, the Forge/Dora line, locked dependencies, tests and lint, then builds on Ubuntu 24.04 with ROS 2 Jazzy and checks the real frozen entrypoint. It attaches the runtime archive, SHA256 and source metadata to a Draft Release. Review and publish that draft before separately registering the Node in the resource platform.
 
 Archive names use `<entrypoint>-v<version>-ubuntu24.04-x86_64-ros2-jazzy.tar.gz`. Existing releases/assets are never overwritten; changed bytes require a new version. ROS and algorithm backends remain external. Build-time Livox validation compiles only digest-checked official wire definitions and never starts a sensor driver. CI/import tests and simulation do not establish physical hardware acceptance.
+
+Nav2 build compatibility and exact runtime ABI checks are described in [backends/ABI.md](backends/ABI.md).
