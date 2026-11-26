@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>navigation_sim_mppi_critics</name>
+  <version>0.1.0</version>
+  <description>Isolated MPPI segment-heading objective for navigation simulation.</description>
+  <maintainer email="development@example.invalid">Navigation simulation development</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>nav2_mppi_controller</depend>
+  <depend>pluginlib</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

@@ -8,3 +8,7 @@ dist/
 out/
 *.spec
 backends/smac/install/
+
+.release-runtime/
+release-assets/
+backends/mppi/install/

@@ -23,13 +23,16 @@ def generate_launch_description():
         # Scope the versioned planner plugin to the planner process. System ROS
         # packages and other backends retain their original search paths.
         environment = {}
-        if name == "planner_server":
-            plugin = Path(__file__).with_name("smac_overlay")
+        if name in ("planner_server", "controller_server"):
+            overlay = "smac_overlay" if name == "planner_server" else "mppi_overlay"
+            plugin = Path(__file__).with_name(overlay)
             if plugin.is_dir():
-                for dependency in ("nav2_core", "nav2_costmap_2d"):
+                dependencies = (("nav2_core", "nav2_costmap_2d") if name == "planner_server"
+                                else ("nav2_mppi_controller",))
+                for dependency in dependencies:
                     manifest = Path(get_package_share_directory(dependency)) / "package.xml"
                     if ET.parse(manifest).getroot().findtext("version") != "1.3.13":
-                        raise RuntimeError("Bundled Smac plugin requires the validated Nav2 1.3.13 ABI")
+                        raise RuntimeError("Bundled navigation plugins require the validated Nav2 1.3.13 ABI")
                 environment = {
                     "AMENT_PREFIX_PATH": str(plugin) + os.pathsep + os.environ.get("AMENT_PREFIX_PATH", ""),
                     "LD_LIBRARY_PATH": str(plugin / "lib") + os.pathsep + os.environ.get("LD_LIBRARY_PATH", ""),
@@ -39,7 +42,7 @@ def generate_launch_description():
         actions += [node, RegisterEventHandler(OnProcessExit(target_action=node,
                     on_exit=[EmitEvent(event=Shutdown(reason=name+" exited"))]))]
     actions.append(Node(package="nav2_lifecycle_manager", executable="lifecycle_manager",
-        name="lifecycle_manager_navigation", output="screen", parameters=[{
+        name="lifecycle_manager_navigation", output="screen", parameters=[params, {
             "autostart": ParameterValue(LaunchConfiguration("autostart"),value_type=bool),
             "node_names": names, "bond_timeout": 4.0}]))
     return LaunchDescription([DeclareLaunchArgument("params_file"),

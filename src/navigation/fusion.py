@@ -21,6 +21,8 @@ class NavigationMapFusion:
         self.fingerprint = None
         self.processed_stamp = -1
         self.last_processed = self.last_publish = self.accepted_at = -math.inf
+        self.accepted_stamp_ns = None
+        self.diagnostics = {"ready": False, "reason": "no_accepted_observation"}
         self.last_snapshot = -math.inf
         self.alignment = None
         self.ready = False
@@ -78,6 +80,7 @@ class NavigationMapFusion:
         )
         self.ready = False
         self.accepted_at = self.last_publish = -math.inf
+        self.accepted_stamp_ns = None
         self.alignment = None
 
     @staticmethod
@@ -93,11 +96,16 @@ class NavigationMapFusion:
             health.get("healthy") is True
             and 0 <= now - health.get("issued_monotonic", -math.inf) < 0.65
         )
+        wall_timeout = self.config.get("accepted_wall_timeout_s", 0.4)
         reliable = False
+        scan_age = None
+        tf_error = None
+        clock_ns = self.ros.get_clock().now().nanoseconds
         if self.map is not None and self.scan is not None and healthy:
             scan = self.scan
             stamp = scan.header.stamp.sec * 10**9 + scan.header.stamp.nanosec
-            age = (self.ros.get_clock().now().nanoseconds - stamp) / 1e9
+            age = (clock_ns - stamp) / 1e9
+            scan_age = age
             if 0 <= age <= 0.4:
                 if stamp != self.processed_stamp and now - self.last_processed >= 0.095:
                     try:
@@ -134,14 +142,33 @@ class NavigationMapFusion:
                             now,
                         ):
                             self.accepted_at = now
+                            self.accepted_stamp_ns = stamp
                         self.processed_stamp, self.last_processed = stamp, now
-                    except TransformException:
+                    except TransformException as error:
                         # A new scan can arrive before its timestamped TF. Retry
                         # it on the next tick; do not discard the previous valid
                         # observation inside its existing 0.4 s freshness bound.
                         # This neither accepts the new scan nor renews the lease.
-                        pass
-                reliable = now - self.accepted_at < 0.4
+                        tf_error = str(error)
+            # A pending/future NEW scan does not invalidate the previous
+            # accepted observation. It also cannot refresh either lease.
+            # Check both acquisition age and wall age of that accepted scan.
+            wall_age = now - self.accepted_at
+            sim_age = None if self.accepted_stamp_ns is None else (clock_ns - self.accepted_stamp_ns) / 1e9
+            reliable = (0 <= wall_age < wall_timeout and sim_age is not None and 0 <= sim_age <= 0.4)
+        else:
+            wall_age = now - self.accepted_at
+            sim_age = None if self.accepted_stamp_ns is None else (clock_ns - self.accepted_stamp_ns) / 1e9
+        reason = ("ready" if reliable else "localization_unhealthy" if not healthy
+                  else "missing_map_or_scan" if self.map is None or self.scan is None
+                  else "no_accepted_observation" if self.accepted_stamp_ns is None
+                  else "accepted_wall_lease_expired" if not 0 <= wall_age < wall_timeout
+                  else "accepted_scan_outside_sim_time_lease")
+        self.diagnostics = {"ready": reliable, "reason": reason,
+                            "accepted_wall_age_s": wall_age if math.isfinite(wall_age) else None,
+                            "accepted_sim_age_s": sim_age, "latest_scan_sim_age_s": scan_age,
+                            "latest_tf_error": tf_error, "accepted_wall_timeout_s": wall_timeout,
+                            "accepted_sim_timeout_s": 0.4}
         self.ready = reliable
         if self.evidence is None:
             return
@@ -169,6 +196,7 @@ class NavigationMapFusion:
                     "origin": [msg.info.origin.position.x, msg.info.origin.position.y, 0.0],
                     "data": list(msg.data),
                     "reliable": reliable,
+                    "observation_health": self.diagnostics,
                 },
             )
             self.last_snapshot = now

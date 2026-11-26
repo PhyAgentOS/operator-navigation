@@ -1,0 +1,14 @@
+{
+  "nav2_version": "1.3.13",
+  "plugin_version": "0.1.0",
+  "upstream": "https://github.com/ros-navigation/navigation2/tree/1.3.13/nav2_mppi_controller",
+  "changes": "Two new plugins wrapping native GoalAngle/Goal score with current segment endpoint XY; installed upstream files unchanged.",
+  "source_sha256": {
+    "include/navigation_sim_mppi_critics/segment_goal_angle_critic.hpp": "25e99110637b74d1ffbf9b6b37fbe986c3c45cdd7692b1ff4c3110cfd65322bc",
+    "include/navigation_sim_mppi_critics/segment_goal_critic.hpp": "a8547cadd0a2cd081c7e3b3bc881898e6e95006ecf11bebb733633461a72fcd8",
+    "src/segment_goal_angle_critic.cpp": "212019d43f4fa940281c37bc802be7c68e56ba332a33153d8c1ad8a779304b17",
+    "src/segment_goal_critic.cpp": "29a326b643fc77375cff527b6b85b27b6ade0af5289a075b8616399de4e526e5",
+    "tests/test_plugin_loading.cpp": "bef52a95b57a2c88e37114fbf287a81c94058c4a79a1d8634cfb692557f70587",
+    "tests/test_segment_goal_angle.cpp": "56e99e88086f6ea5d95c2cd4744b55eb1c077039e9f246842edb57044f300995"
+  }
+}

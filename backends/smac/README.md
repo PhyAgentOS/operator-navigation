@@ -36,3 +36,5 @@ detection or a 3-D coverage guarantee. Execution collision checks remain require
 The original discrete yaw bins and Reeds–Shepp model are retained; differential
 in-place motion primitives are a separate change. Fast-free inflation shortcuts
 are disabled until their conservatism for subcell poses and map edges is proved.
+
+The paos4 patch adds a read-only maximum planning reserve, reduced in quarter steps only when needed to fit the actual endpoints and yaw bins. It never reduces the unchanged padded physical footprint; physically occupied endpoints still reject.
