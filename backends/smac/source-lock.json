@@ -10,5 +10,9 @@
   "ros_distro": "jazzy",
   "arch": "x86_64",
   "nav2_version": "1.3.13",
-  "planning_clearance": "Read-only maximum extra planning reserve, selected in quarters per plan to fit actual start/goal and yaw bins; never below full unchanged padded physical footprint. Occupied physical endpoints still reject."
+  "planning_clearance": "Read-only maximum extra planning reserve, selected in quarters per plan to fit actual start/goal and yaw bins; never below full unchanged padded physical footprint. Occupied physical endpoints still reject.",
+  "build_nav2_versions": [
+    "1.3.13",
+    "1.3.14"
+  ]
 }

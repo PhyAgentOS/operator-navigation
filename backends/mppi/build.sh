@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 source, prefix = map(Path, sys.argv[1:])
 lock = json.loads((source / 'source-lock.json').read_text())
 actual = ET.parse(prefix / 'share/nav2_mppi_controller/package.xml').getroot().findtext('version')
-assert actual == lock['nav2_version'], f'Unvalidated Nav2 ABI: {actual}'
+assert actual in lock['build_nav2_versions'], f'Unvalidated Nav2 ABI: {actual}'
 for name, digest in lock['source_sha256'].items():
     assert hashlib.sha256((source / name).read_bytes()).hexdigest() == digest, name
 PY
@@ -44,6 +44,8 @@ files = ['include/nav2_mppi_controller/critic_data.hpp',
          'include/nav2_mppi_controller/critics/goal_critic.hpp',
          'lib/libmppi_critics.so', 'lib/libmppi_controller.so']
 digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+import xml.etree.ElementTree as ET
+lock['nav2_version'] = ET.parse(prefix / 'share/nav2_mppi_controller/package.xml').getroot().findtext('version')
 lock['built_dependency_sha256'] = {name: digest(prefix / name) for name in files}
 lock['library_sha256'] = digest(output / 'lib/libnavigation_sim_mppi_critics.so')
 lock['native_regressions_passed'] = True

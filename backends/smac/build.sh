@@ -15,7 +15,7 @@ assert pathlib.Path('/opt/ros/jazzy/share/nav2_core/package.xml').is_file(), 'RO
 import xml.etree.ElementTree as ET
 for package in ('nav2_core','nav2_costmap_2d','nav2_smac_planner'):
     version=ET.parse(f'/opt/ros/jazzy/share/{package}/package.xml').getroot().findtext('version')
-    assert version==lock['nav2_version'], f'Unvalidated {package} ABI: {version}'
+    assert version in lock['build_nav2_versions'], f'Unvalidated {package} ABI: {version}'
 PY
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -38,6 +38,9 @@ cp "$here/source-lock.json" "$output/backend.json"
 python3 - "$output" <<'PY'
 import hashlib,json,pathlib,sys
 p=pathlib.Path(sys.argv[1]); f=p/'backend.json'; data=json.loads(f.read_text())
+import xml.etree.ElementTree as ET
+data['nav2_version']=ET.parse('/opt/ros/jazzy/share/nav2_core/package.xml').getroot().findtext('version')
+data['source_nav2_version']='1.3.13'
 data['library_sha256']=hashlib.sha256((p/'lib/libnavigation_smac_planner.so').read_bytes()).hexdigest()
 f.write_text(json.dumps(data,indent=2)+'\n')
 PY

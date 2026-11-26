@@ -49,3 +49,5 @@ BUILD_PYTHON=.venv/bin/python bash scripts/build_pyinstaller.sh
 在个人 fork 修改并通过 PR 合入 main。创建与 pyproject.toml 一致的新 annotated `vX.Y.Z` tag，推送后手动运行 `Build versioned release`，指定该 tag。工作流检查源码、Forge 2/Dora 版本、依赖锁、测试和 lint，在 Ubuntu 24.04 / ROS 2 Jazzy 构建并检查真实冻结入口，再生成带 SHA256 与源码元数据的 Draft Release。发布者核查后发布，再单独登记资源平台。
 
 制品格式为 `<entrypoint>-v<version>-ubuntu24.04-x86_64-ros2-jazzy.tar.gz`。已存在 Release 或资产不覆盖，改变字节必须使用新版本。外部 ROS 与算法后端不随包提供；构建期 Livox 仅编译经过摘要核对的官方消息定义，不运行驱动。CI 与仿真验证不代表真机验收。
+
+Nav2 构建兼容范围与运行时精确 ABI 校验见 [backends/ABI.md](backends/ABI.md)。
