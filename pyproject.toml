@@ -1,6 +1,6 @@
 [project]
 name = "forge-navigation"
-version = "0.4.1"
+version = "0.4.2"
 description = "Reusable Forge navigation component for ROS2 navigation"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

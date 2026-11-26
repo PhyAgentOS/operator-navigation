@@ -6,7 +6,10 @@
 
 ## 运行要求
 
-- Node 版本：`0.4.0`；兼容 **Forge 2**。
+- Node 版本：`0.4.2`；兼容 **Forge 2**。
+
+扫描采集时效上限为 400 ms，允许时间戳量化产生的 1 ns 误差。延迟到达的
+坐标变换不能续期旧观测；未来时间戳、墙钟租约过期和定位异常仍会停止运动。
 - Linux x86_64、Ubuntu 24.04、Python 3.12 ABI、ROS 2 Jazzy。
 - Dora CLI / Python 绑定 `1.0.1`、Forge Msgs / Common `2.1.0`（精确构建依赖见 uv.lock）。
 - ROS 2、算法后端、Livox 消息工作空间由部署方提供，不包含在 Node 包内。启动前加载对应 ROS setup，运行 `--check-runtime` 检查环境；该命令不连接硬件。

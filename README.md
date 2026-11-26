@@ -6,7 +6,11 @@ Owns the Nav2 backend, target execution, velocity authorization and arrival veri
 
 ## Runtime
 
-- Node `0.4.0`, Forge 2, Dora CLI/Python bindings 1.0.1, Forge Msgs/Common 2.1.0; exact build dependencies are in `uv.lock`.
+- Node `0.4.2`, Forge 2, Dora CLI/Python bindings 1.0.1, Forge Msgs/Common 2.1.0; exact build dependencies are in `uv.lock`.
+
+Scan acquisition freshness is limited to 400 ms, with one nanosecond of timestamp
+quantization tolerance. A delayed transform cannot renew a previous observation;
+future stamps, expired wall leases and unhealthy localization still stop motion.
 - Ubuntu 24.04 x86_64, Python 3.12 ABI, external ROS 2 Jazzy and required algorithm/message overlays.
 - Source the ROS/overlay setup before launch. `navigation --check-runtime` validates imports and generated wire types without opening hardware.
 - The `directory_tar_gz` artifact contains the complete `navigation/` runtime; execute `navigation/navigation`. Do not move its executable away from its libraries.

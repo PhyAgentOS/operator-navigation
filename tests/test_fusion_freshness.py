@@ -156,3 +156,18 @@ def test_simulation_wall_jitter_tolerance_still_expires_when_clock_is_paused(del
     tick(f, 11.01)
     assert not f.ready
     assert f.diagnostics["reason"] == "accepted_wall_lease_expired"
+
+
+@pytest.mark.parametrize("age_ns, ready", [
+    (400_000_000, True), (400_000_001, True), (400_000_002, False),
+    (410_000_000, False), (-1, False),
+])
+def test_scan_lease_allows_only_one_nanosecond_of_stamp_quantization(delayed_tf, age_ns, ready):
+    f = delayed_tf
+    f.ros.get_clock.return_value.now.return_value.nanoseconds = 1_000_000_000 + age_ns
+    tick(f, 10.0)
+    assert f.ready is ready
+    # A pending transform never renews either lease, including at the boundary.
+    assert f.accepted_stamp_ns == 1_000_000_000
+    assert f.accepted_at == 9.8
+    f.evidence.observe.assert_not_called()

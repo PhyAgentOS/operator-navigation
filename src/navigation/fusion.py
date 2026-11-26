@@ -106,7 +106,11 @@ class NavigationMapFusion:
             stamp = scan.header.stamp.sec * 10**9 + scan.header.stamp.nanosec
             age = (clock_ns - stamp) / 1e9
             scan_age = age
-            if 0 <= age <= 0.4:
+            # ROS stamps quantize independently to nanoseconds. A nominal 400 ms
+            # interval from a floating simulation clock can differ by one tick.
+            # Compare integer ticks and allow exactly that representation error,
+            # not a larger sensor-age grace period or a future observation.
+            if 0 <= clock_ns - stamp <= 400_000_001:
                 if stamp != self.processed_stamp and now - self.last_processed >= 0.095:
                     try:
                         at = Time.from_msg(scan.header.stamp)
@@ -155,7 +159,8 @@ class NavigationMapFusion:
             # Check both acquisition age and wall age of that accepted scan.
             wall_age = now - self.accepted_at
             sim_age = None if self.accepted_stamp_ns is None else (clock_ns - self.accepted_stamp_ns) / 1e9
-            reliable = (0 <= wall_age < wall_timeout and sim_age is not None and 0 <= sim_age <= 0.4)
+            reliable = (0 <= wall_age < wall_timeout and self.accepted_stamp_ns is not None
+                        and 0 <= clock_ns - self.accepted_stamp_ns <= 400_000_001)
         else:
             wall_age = now - self.accepted_at
             sim_age = None if self.accepted_stamp_ns is None else (clock_ns - self.accepted_stamp_ns) / 1e9
