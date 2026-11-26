@@ -6,7 +6,7 @@ Owns the Nav2 backend, target execution, velocity authorization and arrival veri
 
 ## Runtime
 
-- Node `0.4.2`, Forge 2, Dora CLI/Python bindings 1.0.1, Forge Msgs/Common 2.1.0; exact build dependencies are in `uv.lock`.
+- Node `0.4.3`, Forge 2, Dora CLI/Python bindings 1.0.1, Forge Msgs/Common 2.1.0; exact build dependencies are in `uv.lock`.
 
 Scan acquisition freshness is limited to 400 ms, with one nanosecond of timestamp
 quantization tolerance. A delayed transform cannot renew a previous observation;
@@ -18,7 +18,7 @@ future stamps, expired wall leases and unhealthy localization still stop motion.
 
 ## Behavior
 
-The packaged, separately named SMAC planner uses the pinned Nav2 1.3.13 ABI and collision-consistent paos4 patch. It never replaces system ROS libraries. Optional map fusion keeps a separate navigation obstacle map; missing or occluded returns do not establish free space. The same Node includes the additive SegmentGoal/SegmentGoalAngle MPPI critics, scoped to its controller process; native regressions and discovery tests run during packaging. External coordinators own motion permission and task ordering.
+The packaged, separately named SMAC planner uses the pinned Nav2 1.3.13 source and collision-consistent paos4 patch, compiled for the exact runtime ABI recorded in its metadata. It never replaces system ROS libraries. Optional map fusion keeps a separate navigation obstacle map; missing or occluded returns do not establish free space. The same Node includes the additive SegmentGoal/SegmentGoalAngle MPPI critics, scoped to its controller process; native regressions and discovery tests run during packaging. External coordinators own motion permission and task ordering.
 
 Optional capabilities remain disabled when unconfigured. The Node owns only its own child processes; it does not modify vendor projects or control unrelated applications. Snapshots are observations, not a control API; consumers must verify freshness.
 
@@ -45,3 +45,5 @@ Contribute through a personal fork and a PR to `main`. After merging, create a n
 Archive names use `<entrypoint>-v<version>-ubuntu24.04-x86_64-ros2-jazzy.tar.gz`. Existing releases/assets are never overwritten; changed bytes require a new version. ROS and algorithm backends remain external. Build-time Livox validation compiles only digest-checked official wire definitions and never starts a sensor driver. CI/import tests and simulation do not establish physical hardware acceptance.
 
 Nav2 build compatibility and exact runtime ABI checks are described in [backends/ABI.md](backends/ABI.md).
+
+Optional path, costmap, fused-map and stop snapshots use one bounded background writer. Values and observation timestamps are captured before enqueueing; delayed or failed disk writes leave old files stale and do not block control handling. The control and velocity leases are rechecked immediately before output.

@@ -5,6 +5,7 @@ while no ROS command arrives. Receipt of Twist alone never arms movement.
 """
 
 import math
+import time
 
 from forge_msgs import LocomotionCommand
 
@@ -49,3 +50,16 @@ class VelocityGate:
         ):
             return LocomotionCommand(vx=0, vy=0, wz=0)
         return self._command.model_copy()
+
+
+def sample_authorized_output(gate, *, active, execution_ready, permission_failure, cancel):
+    """Recheck authority and velocity age at output, after ROS callbacks/fusion."""
+    sampled_ns = time.monotonic_ns()
+    now = sampled_ns / 1e9
+    failure = permission_failure(now)
+    allowed = active and execution_ready and failure is None
+    if gate.enabled != allowed:
+        gate.set_enabled(allowed)
+    if active and failure is not None:
+        cancel(failure + "，已停车")
+    return sampled_ns, gate.output(now=now)

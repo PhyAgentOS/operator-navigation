@@ -10,13 +10,13 @@ from .occupancy import OccupancyEvidence
 
 
 class NavigationMapFusion:
-    def __init__(self, ros, buffer, config, snapshot_dir=None):
+    def __init__(self, ros, buffer, config, snapshot_writer=None):
         from nav_msgs.msg import OccupancyGrid
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from sensor_msgs.msg import LaserScan
 
         self.ros, self.buffer, self.config = ros, buffer, config
-        self.snapshot_dir = snapshot_dir
+        self.snapshot_writer = snapshot_writer
         self.map = self.evidence = self.scan = None
         self.fingerprint = None
         self.processed_stamp = -1
@@ -187,11 +187,8 @@ class NavigationMapFusion:
         msg.data = data.astype(np.int8).ravel().tolist()
         self.publisher.publish(msg)
         self.last_publish = now
-        if self.snapshot_dir and now - self.last_snapshot >= 0.5:
-            from .snapshot import write_snapshot
-
-            write_snapshot(
-                self.snapshot_dir,
+        if self.snapshot_writer and now - self.last_snapshot >= 0.5:
+            self.snapshot_writer.submit(
                 "navigation_map",
                 {
                     "width": msg.info.width,
