@@ -14,7 +14,7 @@ from navigation.costmap_reset import CostmapRefresh
 from navigation.policy import PolicyEndpoint
 from navigation.process import OwnedProcess
 from navigation.quality import planar_pose
-from navigation.velocity import VelocityGate
+from navigation.velocity import VelocityGate, sample_authorized_output
 
 
 def run(cfg: dict) -> None:
@@ -102,16 +102,20 @@ def run(cfg: dict) -> None:
             )
         return parameters
 
+    from .snapshot import LatestSnapshotWriter
+
+    snapshot_writer = LatestSnapshotWriter(
+        cfg.get("snapshot_dir"), ("path", "costmap", "navigation_map", "navigation_stop")
+    )
     if cfg.get("snapshot_dir"):
         from nav2_msgs.msg import Costmap
         from nav_msgs.msg import Path as RosPath
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
-        from .snapshot import pose_value, write_snapshot
+        from .snapshot import pose_value
 
         def on_path(msg):
-            write_snapshot(
-                cfg["snapshot_dir"],
+            snapshot_writer.submit(
                 "path",
                 {
                     "frame_id": msg.header.frame_id,
@@ -121,8 +125,7 @@ def run(cfg: dict) -> None:
 
         def on_costmap(msg):
             m = msg.metadata
-            write_snapshot(
-                cfg["snapshot_dir"],
+            snapshot_writer.submit(
                 "costmap",
                 {
                     "frame_id": msg.header.frame_id,
@@ -158,7 +161,7 @@ def run(cfg: dict) -> None:
     if cfg.get("map_fusion", {}).get("enabled", False):
         from navigation.fusion import NavigationMapFusion
 
-        fusion = NavigationMapFusion(ros, buffer, cfg["map_fusion"], cfg.get("snapshot_dir"))
+        fusion = NavigationMapFusion(ros, buffer, cfg["map_fusion"], snapshot_writer)
     state, start_request, start_deadline = "idle", None, 0
     current = handle = None
     goal_at = 0.0
@@ -221,9 +224,7 @@ def run(cfg: dict) -> None:
                 cancel_reason = reason
                 cancel_diagnostics = {"reason": reason, "observed_monotonic": time.monotonic(),
                                       "map_fusion": None if fusion is None else dict(fusion.diagnostics)}
-                if cfg.get("snapshot_dir"):
-                    from .snapshot import write_snapshot
-                    write_snapshot(cfg["snapshot_dir"], "navigation_stop", cancel_diagnostics)
+                snapshot_writer.submit("navigation_stop", cancel_diagnostics)
             if handle is not None and not cancel_sent:
                 handle.cancel_goal_async()
                 cancel_sent = True
@@ -601,13 +602,21 @@ def run(cfg: dict) -> None:
                 except Exception as exc:
                     endpoint.emit(refresh_request, "error", str(exc))
                     refresh_request = None
+            # ROS callbacks and fusion may take time. Never renew an old command
+            # with a fresh output timestamp after checking leases with old time.
+            now = time.monotonic()
             if now - last_output > 0.04:
-                command = gate.output(now=now)
+                sampled_ns, command = sample_authorized_output(
+                    gate, active=current is not None,
+                    execution_ready=handle is not None and cancel_reason is None,
+                    permission_failure=permission_failure, cancel=request_cancel,
+                )
+                now = sampled_ns / 1e9
                 dora.send_output(
                     "locomotion_command",
                     command.to_arrow(),
                     {
-                        "issued_monotonic_ns": time.monotonic_ns(),
+                        "issued_monotonic_ns": sampled_ns,
                         "navigation_authorized": gate.enabled,
                         "request_id": "" if current is None else current.request_id,
                     },
@@ -635,13 +644,16 @@ def run(cfg: dict) -> None:
         endpoint.runtime("error", str(exc))
         raise
     finally:
-        gate.set_enabled(False)
-        dora.send_output(
-            "locomotion_command",
-            gate.output(now=time.monotonic()).to_arrow(),
-            {"issued_monotonic_ns": time.monotonic_ns(), "navigation_authorized": False},
-        )
-        request_cancel("navigation adapter shutdown")
-        backend.stop()
-        ros.destroy_node()
-        rclpy.shutdown()
+        try:
+            gate.set_enabled(False)
+            dora.send_output(
+                "locomotion_command",
+                gate.output(now=time.monotonic()).to_arrow(),
+                {"issued_monotonic_ns": time.monotonic_ns(), "navigation_authorized": False},
+            )
+            request_cancel("navigation adapter shutdown")
+            backend.stop()
+            ros.destroy_node()
+            rclpy.shutdown()
+        finally:
+            snapshot_writer.close()
