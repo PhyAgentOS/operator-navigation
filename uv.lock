@@ -78,7 +78,7 @@ wheels = [
 
 [[package]]
 name = "forge-navigation"
-version = "0.4.3"
+version = "2.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "dora-rs" },
